@@ -1,8 +1,10 @@
 #include <stdio.h>
+#include <unistd.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <string.h>
+
 
 #define SERVER_PORT 8888
 #define BUFF_LEN 1024
@@ -24,10 +26,10 @@ void handle_udp_msg(int fd)
             return;
         }
         printf("client:%s\n",buf);  //打印client发过来的信息
-        memset(buf, 0, BUFF_LEN);
-        sprintf(buf, "I have recieved %d bytes data!\n", count);  //回复client
-        printf("server:%s\n",buf);  //打印自己发送的信息给
-        sendto(fd, buf, BUFF_LEN, 0, (struct sockaddr*)&clent_addr, len);  //发送信息给client，注意使用了clent_addr结构体指针
+        // memset(buf, 0, BUFF_LEN);
+        // sprintf(buf, "I have recieved %d bytes data!\n", count);  //回复client
+        // printf("server:%s\n",buf);  //打印自己发送的信息给
+        // sendto(fd, buf, BUFF_LEN, 0, (struct sockaddr*)&clent_addr, len);  //发送信息给client，注意使用了clent_addr结构体指针
 
     }
 }

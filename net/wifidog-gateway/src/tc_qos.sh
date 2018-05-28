@@ -1,0 +1,39 @@
+#!/bin/bash
+#!/system/bin/sh
+
+tc qdisc del dev eth0 root 2>/dev/null
+
+tc qdisc del dev br0 root 2>/dev/null 
+
+tc qdisc add dev eth0 root handle 1: htb default 256
+
+tc qdisc add dev br0 root handle 1: htb default 256
+
+tc class add dev eth0 parent 1: classid 1:1 htb rate 0kbit ceil 0kbit
+tc class add dev br0 parent 1: classid 1:1 htb rate 0kbit ceil 0kbit
+
+tc class add dev eth0 parent 1:1 classid 1:102 htb rate 10kbit ceil 10kbit prio 1
+	            
+tc filter add dev eth0 parent 1:0 protocol ip prio 100 u32 match ip src 192.168.0.102/32 classid 1:102
+
+tc class add dev br0 parent 1:1 classid 1:102 htb rate 10kbit ceil 10kbit prio 1
+tc filter add dev br0 parent 1: protocol ip prio 100  u32 match ip dst 192.168.0.102/32 classid 1:102
+
+
+
+
+
+iptables -t nat -I POSTROUTING -o br0 -j MASQUERADE
+iptables -A FORWARD -s 192.168.0.100/20 -j ACCEPT
+iptables -A FORWARD -d 192.168.0.100/20 -j ACCEPT 
+#iptables -A FORWARD -s ! 192.168.0.100/24 -j DROP 
+#定每秒只转发30个到达192.168.0.2的数据包（约每秒45KB 一个数据包是1.5KB） 
+iptables -A FORWARD -m limit -d 192.168.0.102 --limit 10/sec -j ACCEPT
+iptables -A FORWARD -d 192.168.0.102 -j DROP
+
+iptables -I INPUT -p tc -s 192.168.0.100/24 -m connlimit --connlimit-above 20 -j REJECT
+iptables -I INPUT -p tcp -s 192.168.0.100/24 -m connlimit --connlimit-above 20 -j REJECT
+
+#time busybox tftp -p -l up.zip 192.168.0.101 
+#time busybox tftp -g -r up.zip 192.168.0.101
+

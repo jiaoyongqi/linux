@@ -1,0 +1,158 @@
+/* vim: set et ts=4 sts=4 sw=4 : */
+/********************************************************************\
+ * This program is free software; you can redistribute it and/or    *
+ * modify it under the terms of the GNU General Public License as   *
+ * published by the Free Software Foundation; either version 2 of   *
+ * the License, or (at your option) any later version.              *
+ *                                                                  *
+ * This program is distributed in the hope that it will be useful,  *
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of   *
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the    *
+ * GNU General Public License for more details.                     *
+ *                                                                  *
+ * You should have received a copy of the GNU General Public License*
+ * along with this program; if not, contact:                        *
+ *                                                                  *
+ * Free Software Foundation           Voice:  +1-617-542-5942       *
+ * 59 Temple Place - Suite 330        Fax:    +1-617-542-2652       *
+ * Boston, MA  02111-1307,  USA       gnu@gnu.org                   *
+ *                                                                  *
+\********************************************************************/
+
+/* $Id$ */
+/** @file tc_qos.c 
+    @author Copyright (C) 2016 vtpp
+*/
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <syslog.h>
+#include <errno.h>
+#include <string.h>
+#include <pthread.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#include "common.h"
+
+#include "safe.h"
+#include "conf.h"
+#include "debug.h"
+#include "util.h"
+#include "client_list.h"
+#include "fw_iptables.h"
+#include "tc_qos.h"
+static int tc_quiet = 0;
+
+//可借用带宽
+int  max_up = 450;
+int  max_down = 2000;
+
+static int
+tc_do_command(const char *format, ...)
+{
+    va_list vlist;char *fmt_cmd;char *cmd;int rc;
+
+    va_start(vlist, format);
+    safe_vasprintf(&fmt_cmd, format, vlist);
+    va_end(vlist);
+
+    safe_asprintf(&cmd, "tc %s", fmt_cmd);
+    free(fmt_cmd);
+
+    debug(LOG_DEBUG, "Executing command: %s", cmd);
+
+    rc = execute(cmd, 1);
+
+    if (rc != 0) {
+        // If quiet, do not display the error
+        if (tc_quiet == 0)
+            debug(LOG_ERR, "tc command failed(%d): %s", rc, cmd);
+        else if (tc_quiet == 1)
+            debug(LOG_DEBUG, "tc command failed(%d): %s", rc, cmd);
+    }
+
+    free(cmd);
+    return rc;
+}
+
+void 
+tc_init_rules()
+{
+    printf("#### iton %s:%d\n",__func__,__LINE__);
+    tc_clear_rules();
+    tc_create_root_rule();
+    tc_create_device_rule();
+    tc_create_client_rules();
+    printf("#### iton %s:%d\n",__func__,__LINE__);
+}
+
+void
+tc_clear_rules(void)
+{
+   	s_config *config = config_get_config();
+    printf("#### iton %s:%d, config->external_interface=%s,config->gw_interface=%s\n",__func__,__LINE__,config->external_interface,config->gw_interface);
+	LOCK_CONFIG();
+    tc_do_command("qdisc del dev %s root 2>/dev/null",config->external_interface);
+    tc_do_command("qdisc del dev %s root 2>/dev/null",config->gw_interface);
+    UNLOCK_CONFIG();
+    printf("#### iton %s:%d\n",__func__,__LINE__);
+}
+
+// create root rules...
+void 
+tc_create_root_rule(void)
+{	
+    s_config *config = config_get_config();
+    printf("#### iton %s:%d,config->external_interface=%s,config->gw_interface=%s\n",__func__,__LINE__,config->external_interface,config->gw_interface);
+	LOCK_CONFIG();
+    tc_do_command("qdisc add dev %s root handle 1: htb default 256",config->external_interface);
+    tc_do_command("qdisc add dev %s root handle 1: htb default 256",config->gw_interface);
+    UNLOCK_CONFIG();
+    printf("#### iton %s:%d\n",__func__,__LINE__);
+}
+
+void
+tc_create_device_rule(void)
+{
+	s_config *config = config_get_config();
+    printf("#### iton %s:%d, config->external_interface=%s,config->deviceupload=%d, config->gw_interface=%s,config->devicedownload=%d\n",__func__,__LINE__,config->external_interface,config->deviceupload,config->gw_interface,config->devicedownload);
+	LOCK_CONFIG();
+    tc_do_command("class add dev %s parent 1: classid 1:1 htb rate %dkbit ceil %dkbit",config->external_interface,config->deviceupload*8,config->deviceupload*8);
+    tc_do_command("class add dev %s parent 1: classid 1:2 htb rate %dkbit ceil %dkbit",config->gw_interface,config->devicedownload*8,config->devicedownload*8);
+    UNLOCK_CONFIG();
+    printf("#### iton %s:%d\n",__func__,__LINE__);
+}
+
+
+static unsigned int ip_start = 100;
+static unsigned int ip_end = 120;
+
+
+void 
+tc_create_client_rules()
+{
+	s_config *config = config_get_config();
+	LOCK_CONFIG();
+    unsigned int p = 0;
+    for(p = ip_start;p < ip_end;p++)
+    {
+    	printf("#### iton %s:%d,config->external_interface=%s,p=%d,config->clientupload=%d,config->gw_interface=%s,config->clientdownload=%d\n",__func__,__LINE__,config->external_interface,p,config->clientupload,config->gw_interface,config->clientdownload);
+        //upload...
+        tc_do_command("class add dev %s parent 1:1 classid 1:1%d htb rate %dkbit ceil %dkbit prio 1",
+                            config->external_interface,p,config->clientupload*8,config->clientupload*8);
+        tc_do_command("filter add dev %s parent 1: protocol ip prio 100 u32 match ip src 192.168.0.%d/32 flowid 1:1%d",
+                            config->external_interface,p,p); 
+        //download...
+        tc_do_command("class add dev %s parent 1:2 classid 1:2%d htb rate %dkbit ceil %dkbit prio 1",
+                            config->gw_interface,p,config->clientdownload*8,config->clientdownload*8);
+        tc_do_command("filter add dev %s parent 1: protocol ip prio 100  u32 match ip dst 192.168.0.%d/32 flowid 1:2%d",
+                            config->gw_interface,p,p);
+    }    
+    UNLOCK_CONFIG();
+    printf("#### iton %s:%d\n",__func__,__LINE__);
+}
+
